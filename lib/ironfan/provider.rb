@@ -16,6 +16,7 @@ module Ironfan
           when :vsphere     then Vsphere
           when :virtualbox  then VirtualBox
           when :rds         then Rds
+          when :openstack   then OpenStack
           else raise "Unsupported provider #{obj[:name]}"
           end
       end
