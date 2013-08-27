@@ -4,7 +4,9 @@ module Ironfan
 
       class Machine < Ironfan::IaasProvider::Machine
         delegate :availability_zone, :endpoint, :engine,
-          :engine_version, :destroy, :image_ref, :flavor_ref, :id, :id=, :name, :state, 
+          :engine_version, :destroy, :image_ref, :flavor, :flavor_ref, :id, :id=, :name, :state, 
+          :networks, :os_ext_sts_vm_state, :os_ext_sts_task_state, :os_ext_sts_power_state,
+          :created, 
           :to => :adaptee
 
         def self.shared?()      false;  end
@@ -12,59 +14,76 @@ module Ironfan
         def self.resource_type()        :machine;   end
         def self.expected_ids(computer) [computer.server.full_name];   end
 
-        def name
-          return id
-        end
+        def public_hostname
+	    name
+	end
 
-        def public_hostname  ; dns_name ; end
+        def dns_name
+	    name
+	end
+	
+	def public_ip_address
+	    networks.first.addresses.first
+	end
+
+	def vpc_id
+	    return nil if networks.empty?
+	    networks.first.name
+	end
  
+	def flavor_name
+	    OpenStack.connection.flavors.find { |f| f.id == flavor["id"]}.name
+	end
+
         def created?
-          not ['terminated', 'shutting-down'].include? state
+          not ['error', 'deleted', 'soft-delete', 'building', 'resized'].include? os_ext_sts_vm_state
         end
 
         def deleting?
-          state == "deleting"
+          os_ext_sts_task_state == "deleting"
         end
 
         def pending?
-          state == "pending"
+          os_ext_sts_power_state == 0
         end
 
         def creating?
-          state == "creating"
+          os_ext_sts_vm_state == "building"
         end
 
         def rebooting?
-          state == "rebooting"
+          state == "REBOOT" || state == "HARD_REBOOT"
         end
 
         def available?
-          state == "available"
+          os_ext_sts_vm_state == "active" && os_ext_sts_task_state == nil
         end
       
+        def running?
+          os_ext_sts_vm_state == "active" && os_ext_sts_task_state == nil
+        end
+
         def stopped? 
+          state == "SHUTOFF" || os_ext_sts_power_state == 4
         end
 
         def perform_after_launch_tasks?
-          false
+          true
         end
 
         def to_display(style,values={})
           # style == :minimal
-          values["State"] =             state.to_sym
-          #values["Endpoint"]  =         adaptee.endpoint["Address"]
-          #values["Created On"] =        created_at.to_date
+          values["State"] =             os_ext_sts_vm_state.to_sym
+          values["Task"] =              os_ext_sts_task_state.nil? ? "None" : os_ext_sts_task_state.to_sym
+          values["Created On"] =        created.to_date
           return values if style == :minimal
 
           # style == :default
-          #values["Flavor"] =            flavor_id
-          #values["AZ"] =                availability_zone
+          values["Flavor"] =            flavor_name
+          values["AZ"] =                availability_zone
           return values if style == :default
 
           # style == :expanded
-          #values["Port"]  =         adaptee.endpoint["Port"]
-          #values["Engine"]  =           engine
-          #values["EngineVersion"] =     engine_version
           values
         end
 
@@ -103,6 +122,7 @@ module Ironfan
         #   for display purposes
         def self.validate_resources!(computers)
           recall.each_value do |machine|
+            Chef::Log.debug("validate machine: #{machine}")
             next unless machine.users.empty? and machine.name
             if machine.name.match("^#{computers.cluster.name}-")
               machine.bogus << :unexpected_machine
@@ -134,29 +154,19 @@ module Ironfan
             fog_server = OpenStack.connection.servers.create(launch_desc)
             machine = Machine.new(:adaptee => fog_server)
             computer.machine = machine
-            remember machine, :id => computer.name
+            remember machine, :id => machine.name
+            Chef::Log.debug(machine)
+#            remember machine, :id => computer.name
 
             Ironfan.step(fog_server.id,"waiting for machine to be ready", :gray)
             Ironfan.tell_you_thrice     :name           => fog_server.id,
                                         :problem        => "server unavailable",
                                         :error_class    => Fog::Errors::Error do
               fog_server.wait_for { ready? }
+		sleep 30
             end
           end
-
-#          # Because chef will never run on these, we fake announcements after launch.  
-#          Ironfan.step(computer.name, "Adding enpoint and port announcements", :green)
-#          announcements = { :openstack => {
-#                              :endpoint  => computer.machine.endpoint["Address"],
-#                              :port      => computer.machine.endpoint["Port"],
-#                              :root_user => launch_desc[:master_username],
-#                              :root_pass => launch_desc[:password],
-#                            }
-#                          }
-#
-#          computer.node[:announces] = announcements
-#          computer.node.save
-          
+          Chef::Log.debug(computer)
         end
 
         # @returns [Hash{String, Array}] of 'what you did wrong' => [relevant, info]
@@ -181,9 +191,9 @@ module Ironfan
 
           # main machine info
           description = {
-            :image_ref => "f09c7e51-f01e-46da-96f1-f9fe889906d2",
-            :flavor_ref => 1,
-            :key_name => "aloibl"
+            :image_ref => cloud.image_ref,
+            :flavor_ref => cloud.flavor_ref,
+            :key_name => cloud.key_name.nil? ? computer.server.cluster_name : cloud.key_name;
 #            :user_data		=>	JSON.pretty_generate(user_data_hsh),
           }
 

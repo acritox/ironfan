@@ -8,6 +8,14 @@ module Ironfan
     end
 
     class OpenStack < Cloud
+      magic :provider,                  Whatever,       :default => Ironfan::Provider::OpenStack
+      magic :image_id,                  String
+      magic :image_name,                String
+      magic :flavor,                    String,         :default => 'm1.tiny'
+      magic :ssh_identity_dir,          String,         :default => ->{ Chef::Config.openstack_key_dir }
+      magic :key_name,                  String
+      magic :ssh_user,                  String,         :default => 'ubuntu'
+
       magic :backing,                   String,         :default => ''
       magic :bits,                      Integer,        :default => "64"
       magic :bootstrap_distro,          String,         :default => 'ubuntu12.04-gems'
@@ -18,12 +26,8 @@ module Ironfan
       magic :dns_servers,		Array
       magic :domain,                    String 
       magic :gateway, 			Array
-      magic :image_name,                String
       magic :ip, 	                String
       magic :memory,                    String,         :default => "4" # Gigabytes
-      magic :provider,                  Whatever,       :default => Ironfan::Provider::OpenStack
-      magic :ssh_identity_dir,          String,         :default => ->{ Chef::Config.vsphere_key_dir }
-      magic :ssh_user,                  String,         :default => "root"
       magic :subnet,			String
       magic :template,                  String
       magic :validation_key,            String,         :default => ->{ IO.read(Chef::Config.validation_key) rescue '' }
@@ -38,8 +42,21 @@ module Ironfan
         end
       end
 
+      def ssh_identity_file(computer)
+        cluster = computer.server.cluster_name
+        "%s/%s.pem" %[ssh_identity_dir, cluster]
+      end
+
       def image_info
         {}
+      end
+
+      def image_ref
+        result = read_attribute(:image_id) || provider.connection.images.find {|img| img.name == read_attribute(:image_name)}.id
+      end
+
+      def flavor_ref
+        provider.connection.flavors.find {|flavor| flavor.name == read_attribute(:flavor)}.id
       end
 
       def implied_volumes
